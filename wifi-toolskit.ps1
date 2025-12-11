@@ -10,7 +10,7 @@
   - Diagnóstico de rede (ping / tracert / arp)
   - Scanner de redes Wi-Fi (site survey básico)
   - Criar novo perfil Wi-Fi (XML + netsh)
-  - Listar perfis WPA-Enterprise + certificados de cliente (Client Auth)
+  - Listar perfis WPA-Enterprise + certificados de cliente (Client Auth detalhados)
 
 .OBS
   - Recomenda-se executar o PowerShell como Administrador.
@@ -366,23 +366,24 @@ function Show-WifiAdapters {
             }
         }
 
-        $pnp = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
-               Where-Object { $_.DeviceID -eq $ad.PNPDeviceID }
+        $pnp = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
+               Where-Object { $_.DeviceID -eq $ad.PNPDeviceID } |
+               Select-Object -First 1
+
+        $hwEnt = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
+                 Where-Object { $_.DeviceID -eq $ad.PNPDeviceID } |
+                 Select-Object -First 1
 
         $hwId = $null
-        if ($pnp -and $pnp.HardwareID) {
-            $hwId = ($pnp.HardwareID | Select-Object -First 2) -join " | "
+        if ($hwEnt -and $hwEnt.HardwareID) {
+            $hwId = ($hwEnt.HardwareID | Select-Object -First 2) -join " | "
         }
 
-        $driver      = $null
         $driverName  = $null
         $driverVer   = $null
-        if ($drvInfo) {
-            $driver = $drvInfo | Where-Object { $_.DeviceID -eq $ad.PNPDeviceID } | Select-Object -First 1
-            if ($driver) {
-                $driverName = $driver.DriverName
-                $driverVer  = $driver.DriverVersion
-            }
+        if ($pnp) {
+            $driverName = $pnp.DriverName
+            $driverVer  = $pnp.DriverVersion
         }
 
         $result += [PSCustomObject]@{
@@ -640,8 +641,6 @@ function New-WifiProfile {
     $nonBroadcastXml = $nonBroadcast
     $authXml = Escape-Xml -Text $auth
     $encXml  = Escape-Xml -Text $encryption
-
-    $profileXml = $null
 
     if ($auth -eq "open" -and $encryption -eq "none") {
         $profileXml = @"
@@ -1013,6 +1012,7 @@ function Show-WifiEnterpriseInfo {
     # --- Parte 2: Certificados de cliente (Client Authentication) ---
     $stores = @("Cert:\CurrentUser\My", "Cert:\LocalMachine\My")
     $certResults = @()
+    $now = Get-Date
 
     foreach ($store in $stores) {
         try {
@@ -1045,12 +1045,40 @@ function Show-WifiEnterpriseInfo {
             }
 
             if ($isClientAuth) {
+                $keySize = $null
+                try {
+                    if ($c.PublicKey -and $c.PublicKey.Key) {
+                        $keySize = $c.PublicKey.Key.KeySize
+                    }
+                } catch { }
+
+                $sigAlg = $null
+                if ($c.SignatureAlgorithm -and $c.SignatureAlgorithm.FriendlyName) {
+                    $sigAlg = $c.SignatureAlgorithm.FriendlyName
+                }
+
+                $ekuFriendlyStr = if ($ekuFriendly) { $ekuFriendly -join ", " } else { "" }
+                $ekuOidStr      = if ($ekuOid)      { $ekuOid -join ", " }      else { "" }
+
+                $isValidNow = $false
+                if ($c.NotBefore -le $now -and $c.NotAfter -ge $now) {
+                    $isValidNow = $true
+                }
+
                 $certResults += [PSCustomObject]@{
-                    Store      = $store
-                    Subject    = $c.Subject
-                    Thumbprint = $c.Thumbprint
-                    NotAfter   = $c.NotAfter
-                    Issuer     = $c.Issuer
+                    Store        = $store
+                    Subject      = $c.Subject
+                    FriendlyName = $c.FriendlyName
+                    Thumbprint   = $c.Thumbprint
+                    SerialNumber = $c.SerialNumber
+                    NotBefore    = $c.NotBefore
+                    NotAfter     = $c.NotAfter
+                    IsValidNow   = $isValidNow
+                    Issuer       = $c.Issuer
+                    KeySize      = $keySize
+                    SignatureAlg = $sigAlg
+                    EKU_Friendly = $ekuFriendlyStr
+                    EKU_Oid      = $ekuOidStr
                 }
             }
         }
@@ -1060,12 +1088,32 @@ function Show-WifiEnterpriseInfo {
         Write-Host "Certificados de cliente encontrados (potencialmente usados em EAP-TLS/802.1X):" -ForegroundColor Green
         $j = 1
         foreach ($cert in $certResults | Sort-Object Store, Subject) {
+            $validoAgora = if ($cert.IsValidNow) { "Sim" } else { "Não" }
+
             Write-Host ""
-            Write-Host ("[{0}] Store.....: {1}" -f $j, $cert.Store) -ForegroundColor Cyan
-            Write-Host ("     Subject...: {0}" -f $cert.Subject)
-            Write-Host ("     Issuer....: {0}" -f $cert.Issuer)
-            Write-Host ("     Thumbprint: {0}" -f $cert.Thumbprint)
-            Write-Host ("     Válido até: {0}" -f $cert.NotAfter)
+            Write-Host ("[{0}] Caminho (Store)..: {1}" -f $j, $cert.Store) -ForegroundColor Cyan
+            if ($cert.FriendlyName) {
+                Write-Host ("     Friendly Name.....: {0}" -f $cert.FriendlyName)
+            }
+            Write-Host ("     Subject...........: {0}" -f $cert.Subject)
+            Write-Host ("     Issuer............: {0}" -f $cert.Issuer)
+            Write-Host ("     Serial Number.....: {0}" -f $cert.SerialNumber)
+            Write-Host ("     Hash (Thumbprint).: {0}" -f $cert.Thumbprint)
+            Write-Host ("     Válido de.........: {0}" -f $cert.NotBefore)
+            Write-Host ("     Válido até........: {0}" -f $cert.NotAfter)
+            Write-Host ("     Válido agora?.....: {0}" -f $validoAgora)
+            if ($cert.KeySize) {
+                Write-Host ("     Tamanho da chave..: {0} bits" -f $cert.KeySize)
+            }
+            if ($cert.SignatureAlg) {
+                Write-Host ("     Algoritmo de ass..: {0}" -f $cert.SignatureAlg)
+            }
+            if ($cert.EKU_Friendly) {
+                Write-Host ("     Uso (EKU).........: {0}" -f $cert.EKU_Friendly)
+            }
+            if ($cert.EKU_Oid) {
+                Write-Host ("     EKU OIDs..........: {0}" -f $cert.EKU_Oid)
+            }
             $j++
         }
     } else {
@@ -1077,7 +1125,7 @@ function Show-WifiEnterpriseInfo {
     Write-Host "Observação: o Windows não expõe de forma simples qual certificado está" -ForegroundColor DarkGray
     Write-Host "exatamente vinculado a cada perfil Wi-Fi Enterprise. Aqui mostramos:" -ForegroundColor DarkGray
     Write-Host " - Quais perfis são Enterprise / 802.1X" -ForegroundColor DarkGray
-    Write-Host " - Quais certificados de cliente existem para autenticação EAP-TLS." -ForegroundColor DarkGray
+    Write-Host " - Detalhes dos certificados de cliente (hash, chave, EKU, validade etc.)." -ForegroundColor DarkGray
 }
 
 #-------------------- MENU PRINCIPAL --------------------#
@@ -1099,7 +1147,7 @@ do {
     Write-Host "[8]  Diagnóstico de rede (ping / tracert / arp)"
     Write-Host "[9]  Scanner de redes Wi-Fi (site survey básico)"
     Write-Host "[10] Criar novo perfil Wi-Fi (XML + netsh)"
-    Write-Host "[11] Ver perfis WPA-Enterprise + certificados de cliente"
+    Write-Host "[11] Ver perfis WPA-Enterprise + certificados de cliente (detalhado)"
     Write-Host "[0]  Sair"
     Write-Host "========================================="
     $opt = Read-Host "Escolha uma opção"
