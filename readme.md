@@ -18,6 +18,9 @@ Em muitos cenários de suporte, o analista precisa descobrir rapidamente:
 
 Este script oferece um **menu interativo em PowerShell** que centraliza essas informações em um único lugar, facilitando o diagnóstico de problemas de conectividade.
 
+<img width="539" height="241" alt="image" src="https://github.com/user-attachments/assets/b3ea95a9-9844-4854-966e-ff58e458a3bc" />
+
+
 ---
 
 ## ⚙️ Funcionalidades
