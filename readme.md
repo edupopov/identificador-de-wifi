@@ -26,18 +26,19 @@ Este script oferece um **menu interativo em PowerShell** que centraliza essas in
 
 O aplicativo oferece, por meio de um menu simples, opções como:
 
- Utilitário para:
+   Utilitário para:
   - Listar redes Wi-Fi
   - Mostrar senhas
   - Mostrar características (WPA/AES etc.)
   - Listar adaptadores Wi-Fi (hardware + rede + IP + banda + driver)
   - Backup/restauração de perfis Wi-Fi (XML)
   - Excluir perfil Wi-Fi específico
-  - Diagnóstico de rede (ping / tracert / arp)
+  - Diagnóstico de rede (ping / tracert / ARP)
   - Scanner de redes Wi-Fi (site survey básico)
   - Criar novo perfil Wi-Fi (XML + netsh)
-  - Listar perfis WPA-Enterprise + certificados de cliente (Client Auth detalhados)
-  - Ver status de conexões VPN (Windows + heurística para clientes de terceiros)
+  - Ver perfis WPA-Enterprise + certificados de cliente (detalhado)
+  - Ver status de conexões VPN (Windows + heurística terceiros)
+  - Analisar rotas padrão (full tunnel x split tunnel de VPN)
 
 ---
 
