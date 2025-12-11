@@ -11,11 +11,6 @@
   - Scanner de redes Wi-Fi (site survey básico)
   - Criar novo perfil Wi-Fi (XML + netsh)
   - Listar perfis WPA-Enterprise + certificados de cliente (Client Auth detalhados)
-
-.OBS
-  - Recomenda-se executar o PowerShell como Administrador.
-  - Usa "netsh wlan", Win32_NetworkAdapter, Win32_NetworkAdapterConfiguration,
-    Win32_PnPEntity, Win32_PnPSignedDriver e Cert:\.
 #>
 
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}
@@ -23,19 +18,14 @@ try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}
 #-------------------- Funções auxiliares --------------------#
 
 function Get-CIDRFromMask {
-    param(
-        [Parameter(Mandatory)][string] $Mask
-    )
+    param([Parameter(Mandatory)][string] $Mask)
     if (-not $Mask) { return $null }
-
     $octets = $Mask.Split('.')
     if ($octets.Count -ne 4) { return $null }
-
     $bits = 0
     foreach ($octet in $octets) {
         [int]$n = 0
         if (-not [int]::TryParse($octet, [ref]$n)) { return $null }
-
         while ($n -gt 0) {
             $bits += ($n -band 1)
             $n = $n -shr 1
@@ -45,24 +35,15 @@ function Get-CIDRFromMask {
 }
 
 function Get-WifiBandFromChannel {
-    param(
-        [Parameter(Mandatory)][int] $Channel
-    )
-    if ($Channel -ge 1 -and $Channel -le 14) {
-        return "2.4 GHz"
-    } elseif ($Channel -ge 32 -and $Channel -le 196) {
-        return "5 GHz"
-    } elseif ($Channel -gt 196) {
-        return "6 GHz / Outra"
-    } else {
-        return "Desconhecida"
-    }
+    param([Parameter(Mandatory)][int] $Channel)
+    if ($Channel -ge 1 -and $Channel -le 14) { "2.4 GHz" }
+    elseif ($Channel -ge 32 -and $Channel -le 196) { "5 GHz" }
+    elseif ($Channel -gt 196) { "6 GHz / Outra" }
+    else { "Desconhecida" }
 }
 
 function Escape-Xml {
-    param(
-        [string] $Text
-    )
+    param([string] $Text)
     if ($null -eq $Text) { return "" }
     $t = $Text
     $t = $t -replace '&','&amp;'
@@ -76,7 +57,6 @@ function Escape-Xml {
 function Get-WifiProfiles {
     $output = netsh wlan show profiles 2>$null
     if (-not $output) { return @() }
-
     $profiles = @()
     foreach ($line in $output) {
         if ($line -notmatch ":") { continue }
@@ -85,7 +65,6 @@ function Get-WifiProfiles {
         $left  = $parts[0].Trim()
         $right = $parts[1].Trim()
         if (-not $right) { continue }
-
         if ($left -match "Perfi" -or $left -match "Profile") {
             $profiles += $right
         }
@@ -94,17 +73,12 @@ function Get-WifiProfiles {
 }
 
 function Select-WifiProfile {
-    param(
-        [string] $Titulo = "Selecione uma rede Wi-Fi:"
-    )
-
+    param([string] $Titulo = "Selecione uma rede Wi-Fi:")
     $profiles = Get-WifiProfiles
-
     if (-not $profiles -or $profiles.Count -eq 0) {
         Write-Host "Nenhuma rede Wi-Fi encontrada neste equipamento." -ForegroundColor Yellow
         return $null
     }
-
     Write-Host ""
     Write-Host "=== $Titulo ===" -ForegroundColor Cyan
     for ($i = 0; $i -lt $profiles.Count; $i++) {
@@ -112,25 +86,18 @@ function Select-WifiProfile {
     }
     Write-Host "[0] Voltar ao menu anterior"
     Write-Host ""
-
     $choice = Read-Host "Digite o número da rede desejada"
-
-    if ($choice -eq "0" -or [string]::IsNullOrWhiteSpace($choice)) {
-        return $null
-    }
-
+    if ($choice -eq "0" -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
     [int]$index = 0
     if (-not [int]::TryParse($choice, [ref]$index)) {
         Write-Host "Opção inválida." -ForegroundColor Red
         return $null
     }
-
     $index = $index - 1
     if ($index -lt 0 -or $index -ge $profiles.Count) {
         Write-Host "Opção fora da faixa." -ForegroundColor Red
         return $null
     }
-
     return $profiles[$index]
 }
 
@@ -143,21 +110,34 @@ function Show-WifiPassword {
     Write-Host ""
     Write-Host "Obtendo dados da rede '$profile'..." -ForegroundColor Cyan
 
-    $details = netsh wlan show profile name="$profile" key=clear 2>$null
+    # captura a saída do netsh (stdout)
+    $details = & netsh wlan show profile name="$profile" key=clear 2>$null
     if (-not $details) {
         Write-Host "Não foi possível obter detalhes desta rede." -ForegroundColor Red
         return
     }
 
-    $keyLine = $details | Select-String "Key Content|Conteúdo da Chave"
+    # procura a linha da senha em PT-BR ou EN (com e sem acento)
+    $keyLine = $details |
+        Where-Object {
+            $_ -match 'Key Content' -or
+            $_ -match 'Conteúdo.*Chave' -or
+            $_ -match 'Conteudo.*Chave'
+        } |
+        Select-Object -First 1
+
     if (-not $keyLine) {
         Write-Host "Senha não encontrada. Pode ser um perfil sem chave ou sem permissões suficientes." -ForegroundColor Yellow
         return
     }
 
+    # extrai tudo após o ":" e remove espaços
     $text  = $keyLine.ToString()
     $parts = $text.Split(":", 2)
-    $senha = if ($parts.Count -eq 2) { $parts[1].Trim() } else { $null }
+    $senha = $null
+    if ($parts.Count -eq 2) {
+        $senha = $parts[1].Trim()
+    }
 
     Write-Host ""
     Write-Host "=== SENHA DA REDE '$profile' ===" -ForegroundColor Green
@@ -211,7 +191,6 @@ function Show-WifiList {
         Write-Host "Nenhuma rede Wi-Fi encontrada neste equipamento." -ForegroundColor Yellow
         return
     }
-
     Write-Host ""
     Write-Host "=== Redes Wi-Fi neste equipamento ===" -ForegroundColor Green
     $i = 1
@@ -225,7 +204,6 @@ function Show-WifiList {
 #-------------------- Interfaces / adaptadores --------------------#
 
 function Get-WifiInterfaces {
-    # Lê "netsh wlan show interfaces" e retorna Nome + SSID + BSSID + Signal + Channel + RadioType
     $output = netsh wlan show interfaces 2>$null
     if (-not $output) { return @() }
 
@@ -233,7 +211,6 @@ function Get-WifiInterfaces {
     $current = [ordered]@{}
 
     foreach ($line in $output) {
-
         if ($line -match "^\s*(Name|Nome)\s*:\s*(.+)$") {
             if ($current.Contains("Name")) {
                 $interfaces += [PSCustomObject]$current
@@ -242,27 +219,22 @@ function Get-WifiInterfaces {
             $current.Name = $Matches[2].Trim()
             continue
         }
-
         if ($line -match "^\s*SSID\s*:\s*(.+)$") {
             $current.SSID = $Matches[1].Trim()
             continue
         }
-
         if ($line -match "^\s*BSSID\s*:\s*(.+)$") {
             $current.BSSID = $Matches[1].Trim()
             continue
         }
-
         if ($line -match "^\s*(Signal|Sinal)\s*:\s*(\d+)%") {
             $current.SignalPercent = [int]$Matches[2]
             continue
         }
-
         if ($line -match "^\s*(Channel|Canal)\s*:\s*(\d+)") {
             $current.Channel = [int]$Matches[2]
             continue
         }
-
         if ($line -match "^\s*(Radio type|Tipo de rádio)\s*:\s*(.+)$") {
             $current.RadioType = $Matches[2].Trim()
             continue
@@ -327,10 +299,7 @@ function Show-WifiAdapters {
             $signal    = $iface.SignalPercent
             $channel   = $iface.Channel
             $radioType = $iface.RadioType
-
-            if ($channel) {
-                $band = Get-WifiBandFromChannel -Channel $channel
-            }
+            if ($channel) { $band = Get-WifiBandFromChannel -Channel $channel }
         }
 
         if (-not $ssid)   { $ssid   = "(não conectado)" }
@@ -360,7 +329,6 @@ function Show-WifiAdapters {
             if ($cfg.DNSServerSearchOrder) {
                 $dnsList = $cfg.DNSServerSearchOrder -join ", "
             }
-
             if ($subnet) {
                 $cidr = Get-CIDRFromMask -Mask $subnet
             }
@@ -411,49 +379,30 @@ function Show-WifiAdapters {
 
     Write-Host ""
     Write-Host "=== ADAPTADORES WI-FI ENCONTRADOS ===" -ForegroundColor Green
-
     $index = 1
     foreach ($item in $result) {
         Write-Host ("[{0}] {1}" -f $index, $item.Nome) -ForegroundColor Cyan
         Write-Host ("    Conexão......: {0}" -f $item.Conexao)
         Write-Host ("    MAC..........: {0}" -f $item.MAC)
         Write-Host ("    SSID.........: {0}" -f $item.SSID)
-        if ($item.BSSID) {
-            Write-Host ("    BSSID........: {0}" -f $item.BSSID)
-        }
+        if ($item.BSSID) { Write-Host ("    BSSID........: {0}" -f $item.BSSID) }
         Write-Host ("    Força sinal..: {0} %" -f $item.Signal)
         Write-Host ("    Status.......: {0}" -f $item.Status)
-
-        if ($item.Banda) {
-            Write-Host ("    Banda........: {0}" -f $item.Banda)
-        }
-        if ($item.Canal) {
-            Write-Host ("    Canal........: {0}" -f $item.Canal)
-        }
-        if ($item.RadioType) {
-            Write-Host ("    Tipo rádio...: {0}" -f $item.RadioType)
-        }
-
+        if ($item.Banda)   { Write-Host ("    Banda........: {0}" -f $item.Banda) }
+        if ($item.Canal)   { Write-Host ("    Canal........: {0}" -f $item.Canal) }
+        if ($item.RadioType) { Write-Host ("    Tipo rádio...: {0}" -f $item.RadioType) }
         if ($item.IPv4) {
             $cidrStr = if ($item.CIDR) { " /$($item.CIDR)" } else { "" }
             Write-Host ("    IPv4.........: {0}" -f $item.IPv4)
-            if ($item.Subnet) {
-                Write-Host ("    Máscara......: {0}{1}" -f $item.Subnet, $cidrStr)
-            }
-            if ($item.Gateway) {
-                Write-Host ("    Gateway......: {0}" -f $item.Gateway)
-            }
-            if ($item.DNS) {
-                Write-Host ("    DNS..........: {0}" -f $item.DNS)
-            }
+            if ($item.Subnet) { Write-Host ("    Máscara......: {0}{1}" -f $item.Subnet, $cidrStr) }
+            if ($item.Gateway) { Write-Host ("    Gateway......: {0}" -f $item.Gateway) }
+            if ($item.DNS)     { Write-Host ("    DNS..........: {0}" -f $item.DNS) }
         } else {
             Write-Host ("    IPv4.........: (sem IP configurado)") -ForegroundColor DarkYellow
         }
-
         if ($item.DriverName -or $item.DriverVersion) {
             Write-Host ("    Driver.......: {0} {1}" -f $item.DriverName, $item.DriverVersion)
         }
-
         if ($item.HardwareID) {
             Write-Host ("    HardwareID...: {0}" -f $item.HardwareID)
         }
@@ -474,29 +423,19 @@ function Backup-WifiProfiles {
     Write-Host "Backup de perfis Wi-Fi (export XML com senha - key=clear)" -ForegroundColor Cyan
     Write-Host "Pasta padrão sugerida: $defaultFolder"
     $folder = Read-Host "Informe a pasta de destino (ENTER para usar a padrão)"
-
-    if ([string]::IsNullOrWhiteSpace($folder)) {
-        $folder = $defaultFolder
-    }
-
+    if ([string]::IsNullOrWhiteSpace($folder)) { $folder = $defaultFolder }
     if (-not (Test-Path -LiteralPath $folder)) {
         New-Item -ItemType Directory -Path $folder -Force | Out-Null
     }
-
     Write-Host ""
     Write-Host "Exportando todos os perfis Wi-Fi para: $folder" -ForegroundColor Green
-
     & netsh wlan export profile key=clear folder="$folder" | Out-Null
-
     $xmlFiles = Get-ChildItem -Path $folder -Filter *.xml -ErrorAction SilentlyContinue
-
     if (-not $xmlFiles) {
         Write-Host "Nenhum arquivo XML de perfil foi gerado. Verifique permissões e perfis existentes." -ForegroundColor Yellow
     } else {
         Write-Host ("Backup concluído. Perfis exportados: {0}" -f $xmlFiles.Count) -ForegroundColor Green
-        foreach ($f in $xmlFiles) {
-            Write-Host (" - {0}" -f $f.Name)
-        }
+        foreach ($f in $xmlFiles) { Write-Host (" - {0}" -f $f.Name) }
         Write-Host ""
         Write-Host "Atenção: os XML contêm as chaves (senhas) em texto claro. Armazene com segurança." -ForegroundColor DarkYellow
     }
@@ -506,28 +445,23 @@ function Restore-WifiProfiles {
     Write-Host ""
     Write-Host "Restauração de perfis Wi-Fi a partir de XML" -ForegroundColor Cyan
     $folder = Read-Host "Informe a pasta onde estão os arquivos XML do backup"
-
     if ([string]::IsNullOrWhiteSpace($folder) -or -not (Test-Path -LiteralPath $folder)) {
         Write-Host "Pasta inválida ou não encontrada." -ForegroundColor Red
         return
     }
-
     $xmlFiles = Get-ChildItem -Path $folder -Filter *.xml -ErrorAction SilentlyContinue
     if (-not $xmlFiles) {
         Write-Host "Nenhum arquivo XML encontrado na pasta especificada." -ForegroundColor Yellow
         return
     }
-
     Write-Host ""
     Write-Host ("Foram encontrados {0} arquivo(s) XML." -f $xmlFiles.Count) -ForegroundColor Green
     Write-Host "Os perfis serão importados para o usuário: TODOS (user=all)." -ForegroundColor DarkGray
     Write-Host ""
-
     foreach ($file in $xmlFiles) {
         Write-Host ("Importando perfil a partir de: {0}" -f $file.Name) -ForegroundColor Cyan
         & netsh wlan add profile filename="$($file.FullName)" user=all | Out-Null
     }
-
     Write-Host ""
     Write-Host "Restauração concluída. Verifique os perfis com 'netsh wlan show profiles'." -ForegroundColor Green
 }
@@ -538,24 +472,18 @@ function Remove-WifiProfile {
     Write-Host ""
     $profile = Select-WifiProfile -Titulo "Selecione o perfil Wi-Fi que deseja excluir"
     if (-not $profile) { return }
-
     Write-Host ""
     Write-Host "Você selecionou o perfil: '$profile'" -ForegroundColor Yellow
     $confirm = Read-Host "Tem certeza que deseja EXCLUIR este perfil? (S/N)"
-
     if ($confirm -notmatch '^[sSyY]') {
         Write-Host "Operação cancelada pelo usuário." -ForegroundColor Cyan
         return
     }
-
     Write-Host ""
     Write-Host "Excluindo perfil '$profile'..." -ForegroundColor Cyan
-
     $out = netsh wlan delete profile name="$profile" 2>&1
     $out | ForEach-Object { Write-Host "   $($_)" }
-
     $after = Get-WifiProfiles
-
     if ($after -contains $profile) {
         Write-Host ""
         Write-Host "⚠ O perfil '$profile' ainda aparece na lista após a tentativa de exclusão." -ForegroundColor Yellow
@@ -564,7 +492,6 @@ function Remove-WifiProfile {
         Write-Host ""
         Write-Host "✅ Perfil '$profile' excluído da configuração de Wi-Fi (onde existia)." -ForegroundColor Green
     }
-
     Write-Host ""
     Write-Host "Perfis Wi-Fi atuais:" -ForegroundColor Cyan
     Show-WifiList
@@ -575,13 +502,11 @@ function Remove-WifiProfile {
 function New-WifiProfile {
     Write-Host ""
     Write-Host "=== Criação de novo perfil Wi-Fi ===" -ForegroundColor Cyan
-
     $ssid = Read-Host "Informe o SSID da rede (nome exato do Wi-Fi)"
     if ([string]::IsNullOrWhiteSpace($ssid)) {
         Write-Host "SSID inválido." -ForegroundColor Red
         return
     }
-
     $existing = Get-WifiProfiles | Where-Object { $_ -eq $ssid }
     if ($existing) {
         Write-Host ""
@@ -592,39 +517,29 @@ function New-WifiProfile {
             return
         }
     }
-
     $hiddenAns = Read-Host "A rede é OCULTA (hidden)? (S/N)"
     $nonBroadcast = if ($hiddenAns -match '^[sSyY]') { "true" } else { "false" }
-
     Write-Host ""
     Write-Host "Tipo de segurança:" -ForegroundColor Cyan
     Write-Host "[1] Aberta (sem autenticação / sem senha)"
     Write-Host "[2] WPA2-Personal (AES, senha pré-compartilhada)"
     $secOpt = Read-Host "Escolha uma opção (1 ou 2)"
-
     $auth = $null
     $encryption = $null
     $password = $null
     $plainPwd = $null
-
     switch ($secOpt) {
-        "1" {
-            $auth = "open"
-            $encryption = "none"
-        }
+        "1" { $auth = "open";   $encryption = "none" }
         "2" {
-            $auth = "WPA2PSK"
-            $encryption = "AES"
+            $auth = "WPA2PSK";  $encryption = "AES"
             $password = Read-Host "Informe a senha (passphrase)" -AsSecureString
             if (-not $password) {
                 Write-Host "Senha inválida." -ForegroundColor Red
                 return
             }
-
             $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($password)
             $plainPwd = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
             [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-
             $pwdConfirm = Read-Host "Confirme a senha (digite novamente)"
             if ($plainPwd -ne $pwdConfirm) {
                 Write-Host "As senhas não conferem. Operação cancelada." -ForegroundColor Red
@@ -636,11 +551,10 @@ function New-WifiProfile {
             return
         }
     }
-
-    $ssidXml = Escape-Xml -Text $ssid
-    $nonBroadcastXml = $nonBroadcast
-    $authXml = Escape-Xml -Text $auth
-    $encXml  = Escape-Xml -Text $encryption
+    $ssidXml        = Escape-Xml -Text $ssid
+    $nonBroadcastXml= $nonBroadcast
+    $authXml        = Escape-Xml -Text $auth
+    $encXml         = Escape-Xml -Text $encryption
 
     if ($auth -eq "open" -and $encryption -eq "none") {
         $profileXml = @"
@@ -703,13 +617,10 @@ function New-WifiProfile {
         ("WiFiProfile_{0}.xml" -f ([Guid]::NewGuid().ToString("N")))
     )
     $profileXml | Out-File -FilePath $tempPath -Encoding UTF8 -Force
-
     Write-Host ""
     Write-Host "Arquivo de perfil gerado: $tempPath" -ForegroundColor DarkGray
     Write-Host "Importando perfil com netsh..." -ForegroundColor Cyan
-
     & netsh wlan add profile filename="$tempPath" user=all
-
     Write-Host ""
     Write-Host "Perfil para SSID '$ssid' criado (ou atualizado) com sucesso, se não houver erros acima." -ForegroundColor Green
     Write-Host "Verifique com: netsh wlan show profiles" -ForegroundColor DarkGray
@@ -720,12 +631,10 @@ function New-WifiProfile {
 function Run-PingTool {
     Write-Host ""
     $target = Read-Host "Informe o host/IP para ping (ex.: 8.8.8.8 ou www.microsoft.com)"
-
     if ([string]::IsNullOrWhiteSpace($target)) {
         Write-Host "Destino inválido ou vazio." -ForegroundColor Yellow
         return
     }
-
     Write-Host ""
     Write-Host "Executando PING em $target ..." -ForegroundColor Cyan
     Write-Host "--------------------------------------------"
@@ -736,12 +645,10 @@ function Run-PingTool {
 function Run-TracertTool {
     Write-Host ""
     $target = Read-Host "Informe o host/IP para TRACERT (ex.: 8.8.8.8 ou www.microsoft.com)"
-
     if ([string]::IsNullOrWhiteSpace($target)) {
         Write-Host "Destino inválido ou vazio." -ForegroundColor Yellow
         return
     }
-
     Write-Host ""
     Write-Host "Executando TRACERT para $target ..." -ForegroundColor Cyan
     Write-Host "--------------------------------------------"
@@ -752,17 +659,11 @@ function Run-TracertTool {
 function Show-ArpTable {
     Write-Host ""
     $filter = Read-Host "Filtrar por IP (ENTER para mostrar todos)"
-
     Write-Host ""
     Write-Host "Tabela ARP:" -ForegroundColor Cyan
     Write-Host "--------------------------------------------"
-
-    if ([string]::IsNullOrWhiteSpace($filter)) {
-        arp -a
-    } else {
-        arp -a | Select-String $filter
-    }
-
+    if ([string]::IsNullOrWhiteSpace($filter)) { arp -a }
+    else { arp -a | Select-String $filter }
     Write-Host "--------------------------------------------"
 }
 
@@ -779,7 +680,6 @@ function Show-NetworkDiagnosticsMenu {
         Write-Host "[0] Voltar ao menu principal"
         Write-Host "========================================="
         $optDiag = Read-Host "Escolha uma opção"
-
         switch ($optDiag) {
             "1" { Run-PingTool   ; Read-Host "`nPressione ENTER para voltar ao menu de diagnóstico..." | Out-Null }
             "2" { Run-TracertTool; Read-Host "`nPressione ENTER para voltar ao menu de diagnóstico..." | Out-Null }
@@ -790,7 +690,6 @@ function Show-NetworkDiagnosticsMenu {
                 Start-Sleep -Seconds 1.5
             }
         }
-
     } while (-not $voltar)
 }
 
@@ -801,46 +700,34 @@ function Scan-WifiNetworks {
     Write-Host "Realizando varredura de redes Wi-Fi próximas (site survey básico)..." -ForegroundColor Cyan
     Write-Host "Isso depende do adaptador Wi-Fi estar ligado e habilitado." -ForegroundColor DarkGray
     Write-Host ""
-
     $output = netsh wlan show networks mode=bssid 2>$null
     if (-not $output) {
         Write-Host "Não foi possível obter a lista de redes. Verifique se o Wi-Fi está ligado." -ForegroundColor Yellow
         return
     }
-
     $results = @()
     $currentSSID        = $null
     $currentAuth        = $null
     $currentEncryption  = $null
     $currentEntry       = $null
-
     foreach ($line in $output) {
-
         if ($line -match "^\s*SSID\s+\d+\s*:\s*(.+)$") {
-            if ($currentEntry) {
-                $results += [PSCustomObject]$currentEntry
-                $currentEntry = $null
-            }
+            if ($currentEntry) { $results += [PSCustomObject]$currentEntry; $currentEntry = $null }
             $currentSSID       = $Matches[1].Trim()
             $currentAuth       = $null
             $currentEncryption = $null
             continue
         }
-
         if ($line -match "^\s*(Authentication|Autenticação)\s*:\s*(.+)$") {
             $currentAuth = $Matches[2].Trim()
             continue
         }
-
         if ($line -match "^\s*(Encryption|Criptografia)\s*:\s*(.+)$") {
             $currentEncryption = $Matches[2].Trim()
             continue
         }
-
         if ($line -match "^\s*BSSID\s+\d+\s*:\s*(.+)$") {
-            if ($currentEntry) {
-                $results += [PSCustomObject]$currentEntry
-            }
+            if ($currentEntry) { $results += [PSCustomObject]$currentEntry }
             $bssid = $Matches[1].Trim()
             $currentEntry = [ordered]@{
                 SSID        = $currentSSID
@@ -854,14 +741,10 @@ function Scan-WifiNetworks {
             }
             continue
         }
-
         if ($line -match "^\s*(Signal|Sinal)\s*:\s*(\d+)%") {
-            if ($currentEntry) {
-                $currentEntry.Signal = [int]$Matches[2]
-            }
+            if ($currentEntry) { $currentEntry.Signal = [int]$Matches[2] }
             continue
         }
-
         if ($line -match "^\s*(Channel|Canal)\s*:\s*(\d+)") {
             if ($currentEntry) {
                 $ch = [int]$Matches[2]
@@ -870,29 +753,19 @@ function Scan-WifiNetworks {
             }
             continue
         }
-
         if ($line -match "^\s*(Radio type|Tipo de rádio)\s*:\s*(.+)$") {
-            if ($currentEntry) {
-                $currentEntry.RadioType = $Matches[2].Trim()
-            }
+            if ($currentEntry) { $currentEntry.RadioType = $Matches[2].Trim() }
             continue
         }
     }
-
-    if ($currentEntry) {
-        $results += [PSCustomObject]$currentEntry
-    }
-
+    if ($currentEntry) { $results += [PSCustomObject]$currentEntry }
     if (-not $results -or $results.Count -eq 0) {
         Write-Host "Nenhuma rede encontrada na varredura." -ForegroundColor Yellow
         return
     }
-
     $results = $results | Sort-Object SSID, BSSID
-
     Write-Host ""
     Write-Host "=== REDES WI-FI ENCONTRADAS (SITE SURVEY BÁSICO) ===" -ForegroundColor Green
-
     $ssidAtual = $null
     $idx = 1
     foreach ($item in $results) {
@@ -901,27 +774,15 @@ function Scan-WifiNetworks {
             Write-Host ("SSID: {0}" -f $item.SSID) -ForegroundColor Cyan
             $ssidAtual = $item.SSID
         }
-
         Write-Host ("  [{0}] BSSID.....: {1}" -f $idx, $item.BSSID)
         Write-Host ("       Sinal......: {0} %" -f $item.Signal)
-        if ($item.Banda) {
-            Write-Host ("       Banda......: {0}" -f $item.Banda)
-        }
-        if ($item.Channel) {
-            Write-Host ("       Canal......: {0}" -f $item.Channel)
-        }
-        if ($item.RadioType) {
-            Write-Host ("       Tipo rádio.: {0}" -f $item.RadioType)
-        }
-        if ($item.Auth) {
-            Write-Host ("       Autenticação: {0}" -f $item.Auth)
-        }
-        if ($item.Encryption) {
-            Write-Host ("       Criptografia: {0}" -f $item.Encryption)
-        }
+        if ($item.Banda)     { Write-Host ("       Banda......: {0}" -f $item.Banda) }
+        if ($item.Channel)   { Write-Host ("       Canal......: {0}" -f $item.Channel) }
+        if ($item.RadioType) { Write-Host ("       Tipo rádio.: {0}" -f $item.RadioType) }
+        if ($item.Auth)      { Write-Host ("       Autenticação: {0}" -f $item.Auth) }
+        if ($item.Encryption){ Write-Host ("       Criptografia: {0}" -f $item.Encryption) }
         $idx++
     }
-
     Write-Host ""
     Write-Host "Dica: use esta saída como um mini site survey (interferência, sobreposição de canais, banda, etc.)." -ForegroundColor DarkGray
 }
@@ -932,45 +793,34 @@ function Show-WifiEnterpriseInfo {
     Write-Host ""
     Write-Host "=== Perfis Wi-Fi WPA/WPA2/WPA3 Enterprise + Certificados de Cliente ===" -ForegroundColor Cyan
     Write-Host ""
-
-    # --- Parte 1: Perfis Wi-Fi Enterprise / 802.1X ---
     $profiles = Get-WifiProfiles
     $enterpriseProfiles = @()
-
     foreach ($p in $profiles) {
         $details = netsh wlan show profile name="$p" 2>$null
         if (-not $details) { continue }
-
         $authLines  = $details | Select-String "Authentication|Autenticação"
         $encLines   = $details | Select-String "Cipher|Cifra"
         $eapLines   = $details | Select-String "EAP type|Tipo de EAP|Tipo EAP"
-
         $auth = $null
         if ($authLines) {
             $line  = $authLines[0].ToString()
             $parts = $line.Split(":",2)
             if ($parts.Count -eq 2) { $auth = $parts[1].Trim() }
         }
-
         $enc = $null
         if ($encLines) {
             $line  = $encLines[0].ToString()
             $parts = $line.Split(":",2)
             if ($parts.Count -eq 2) { $enc = $parts[1].Trim() }
         }
-
         $eap = $null
         if ($eapLines) {
             $line  = $eapLines[0].ToString()
             $parts = $line.Split(":",2)
             if ($parts.Count -eq 2) { $eap = $parts[1].Trim() }
         }
-
         $isEnterprise = $false
-        if ($auth -match "Enterprise" -or $auth -match "802\.1X" -or $eap) {
-            $isEnterprise = $true
-        }
-
+        if ($auth -match "Enterprise" -or $auth -match "802\.1X" -or $eap) { $isEnterprise = $true }
         if ($isEnterprise) {
             $enterpriseProfiles += [PSCustomObject]@{
                 Perfil        = $p
@@ -988,9 +838,7 @@ function Show-WifiEnterpriseInfo {
             Write-Host ""
             Write-Host ("[{0}] Perfil......: {1}" -f $i, $ep.Perfil) -ForegroundColor Cyan
             Write-Host ("     Autenticação: {0}" -f $ep.Autenticacao)
-            if ($ep.Criptografia) {
-                Write-Host ("     Criptografia: {0}" -f $ep.Criptografia)
-            }
+            if ($ep.Criptografia) { Write-Host ("     Criptografia: {0}" -f $ep.Criptografia) }
             if ($ep.EAP) {
                 Write-Host ("     Tipo EAP....: {0}" -f $ep.EAP)
             } else {
@@ -1009,41 +857,29 @@ function Show-WifiEnterpriseInfo {
     Write-Host "-----------------------------------------------------------------" -ForegroundColor DarkGray
     Write-Host ""
 
-    # --- Parte 2: Certificados de cliente (Client Authentication) ---
     $stores = @("Cert:\CurrentUser\My", "Cert:\LocalMachine\My")
     $certResults = @()
     $now = Get-Date
 
     foreach ($store in $stores) {
-        try {
-            $certs = Get-ChildItem -Path $store -ErrorAction Stop
-        } catch {
-            continue
-        }
-
+        try { $certs = Get-ChildItem -Path $store -ErrorAction Stop } catch { continue }
         foreach ($c in $certs) {
             $isClientAuth = $false
             $ekuFriendly  = @()
             $ekuOid       = @()
-
             if ($c.EnhancedKeyUsageList) {
                 foreach ($eku in $c.EnhancedKeyUsageList) {
                     if ($eku.FriendlyName) { $ekuFriendly += $eku.FriendlyName }
                     if ($eku.ObjectId)     { $ekuOid      += $eku.ObjectId.Value }
                 }
             }
-
             if ($ekuFriendly -contains "Client Authentication" -or
                 $ekuFriendly -contains "Autenticação de Cliente") {
                 $isClientAuth = $true
             }
-
             if (-not $isClientAuth -and $ekuOid) {
-                if ($ekuOid -contains "1.3.6.1.5.5.7.3.2") {   # OID Client Authentication
-                    $isClientAuth = $true
-                }
+                if ($ekuOid -contains "1.3.6.1.5.5.7.3.2") { $isClientAuth = $true }
             }
-
             if ($isClientAuth) {
                 $keySize = $null
                 try {
@@ -1051,20 +887,14 @@ function Show-WifiEnterpriseInfo {
                         $keySize = $c.PublicKey.Key.KeySize
                     }
                 } catch { }
-
                 $sigAlg = $null
                 if ($c.SignatureAlgorithm -and $c.SignatureAlgorithm.FriendlyName) {
                     $sigAlg = $c.SignatureAlgorithm.FriendlyName
                 }
-
                 $ekuFriendlyStr = if ($ekuFriendly) { $ekuFriendly -join ", " } else { "" }
                 $ekuOidStr      = if ($ekuOid)      { $ekuOid -join ", " }      else { "" }
-
                 $isValidNow = $false
-                if ($c.NotBefore -le $now -and $c.NotAfter -ge $now) {
-                    $isValidNow = $true
-                }
-
+                if ($c.NotBefore -le $now -and $c.NotAfter -ge $now) { $isValidNow = $true }
                 $certResults += [PSCustomObject]@{
                     Store        = $store
                     Subject      = $c.Subject
@@ -1089,12 +919,9 @@ function Show-WifiEnterpriseInfo {
         $j = 1
         foreach ($cert in $certResults | Sort-Object Store, Subject) {
             $validoAgora = if ($cert.IsValidNow) { "Sim" } else { "Não" }
-
             Write-Host ""
             Write-Host ("[{0}] Caminho (Store)..: {1}" -f $j, $cert.Store) -ForegroundColor Cyan
-            if ($cert.FriendlyName) {
-                Write-Host ("     Friendly Name.....: {0}" -f $cert.FriendlyName)
-            }
+            if ($cert.FriendlyName) { Write-Host ("     Friendly Name.....: {0}" -f $cert.FriendlyName) }
             Write-Host ("     Subject...........: {0}" -f $cert.Subject)
             Write-Host ("     Issuer............: {0}" -f $cert.Issuer)
             Write-Host ("     Serial Number.....: {0}" -f $cert.SerialNumber)
@@ -1102,18 +929,10 @@ function Show-WifiEnterpriseInfo {
             Write-Host ("     Válido de.........: {0}" -f $cert.NotBefore)
             Write-Host ("     Válido até........: {0}" -f $cert.NotAfter)
             Write-Host ("     Válido agora?.....: {0}" -f $validoAgora)
-            if ($cert.KeySize) {
-                Write-Host ("     Tamanho da chave..: {0} bits" -f $cert.KeySize)
-            }
-            if ($cert.SignatureAlg) {
-                Write-Host ("     Algoritmo de ass..: {0}" -f $cert.SignatureAlg)
-            }
-            if ($cert.EKU_Friendly) {
-                Write-Host ("     Uso (EKU).........: {0}" -f $cert.EKU_Friendly)
-            }
-            if ($cert.EKU_Oid) {
-                Write-Host ("     EKU OIDs..........: {0}" -f $cert.EKU_Oid)
-            }
+            if ($cert.KeySize) { Write-Host ("     Tamanho da chave..: {0} bits" -f $cert.KeySize) }
+            if ($cert.SignatureAlg) { Write-Host ("     Algoritmo de ass..: {0}" -f $cert.SignatureAlg) }
+            if ($cert.EKU_Friendly) { Write-Host ("     Uso (EKU).........: {0}" -f $cert.EKU_Friendly) }
+            if ($cert.EKU_Oid)      { Write-Host ("     EKU OIDs..........: {0}" -f $cert.EKU_Oid) }
             $j++
         }
     } else {
@@ -1133,7 +952,6 @@ function Show-WifiEnterpriseInfo {
 $sair = $false
 do {
     Clear-Host
-
     Write-Host "========================================="
     Write-Host "         MENU WI-FI (NETSH)              "
     Write-Host "========================================="
@@ -1170,7 +988,6 @@ do {
             Start-Sleep -Seconds 1.5
         }
     }
-
 } while (-not $sair)
 
 Clear-Host
