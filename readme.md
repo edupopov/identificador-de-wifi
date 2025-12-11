@@ -57,3 +57,44 @@ O aplicativo oferece, por meio de um menu simples, opções como:
 
 ```powershell
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+🚀 Como usar
+
+Clone o repositório ou faça download do script
+
+git clone https://github.com/SEU-USUARIO/SEU-REPOSITORIO.git
+
+
+Abra o PowerShell como usuário com permissões adequadas.
+
+Navegue até a pasta do script:
+
+cd "Caminho\para\SEU-REPOSITORIO"
+
+
+Execute o script:
+
+.\wifi-toolkit.ps1
+
+
+Use o menu interativo
+Siga as opções exibidas na tela para listar redes, visualizar senhas ou consultar detalhes de conexão.
+
+📁 Estrutura sugerida do repositório
+.
+├── wifi-toolkit.ps1   # Script principal em PowerShell
+├── README.md          # Este arquivo
+└── assets/            # (Opcional) Screenshots, imagens, etc.
+
+🧾 Licença
+
+Defina aqui a licença do projeto (por exemplo, MIT, GPLv3, etc.).
+Exemplo:
+
+Este projeto está licenciado sob os termos da licença MIT.
+
+✉️ Autor
+
+Aplicativo criado por Eduardo Popovici.
+
+Sinta-se à vontade para abrir Issues e Pull Requests com sugestões de melhoria, correções ou novas funcionalidades.
