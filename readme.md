@@ -81,8 +81,7 @@ Siga as opções exibidas na tela para listar redes, visualizar senhas ou consul
 
 🧾 Licença
 
-Defina aqui a licença do projeto (por exemplo, MIT, GPLv3, etc.).
-Exemplo:
+Exemplo: MIT
 
 Este projeto está licenciado sob os termos da licença MIT.
 
