@@ -7,11 +7,12 @@
   - Listar adaptadores Wi-Fi (hardware + rede + IP + banda + driver)
   - Backup/restauração de perfis Wi-Fi (XML)
   - Excluir perfil Wi-Fi específico
-  - Diagnóstico de rede (ping / tracert / arp)
+  - Diagnóstico de rede (ping / tracert / ARP)
   - Scanner de redes Wi-Fi (site survey básico)
   - Criar novo perfil Wi-Fi (XML + netsh)
-  - Listar perfis WPA-Enterprise + certificados de cliente (Client Auth detalhados)
-  - Ver status de conexões VPN (Windows + heurística para clientes de terceiros)
+  - Ver perfis WPA-Enterprise + certificados de cliente (detalhado)
+  - Ver status de conexões VPN (Windows + heurística terceiros)
+  - Analisar rotas padrão (full tunnel x split tunnel de VPN)
 #>
 
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}
@@ -1215,6 +1216,207 @@ function Show-VpnStatus {
     Write-Host " - Para confirmar rota, use também:  route print  e  ipconfig /all." -ForegroundColor DarkGray
 }
 
+#-------------------- ANÁLISE DE ROTA PADRÃO / FULL x SPLIT TUNNEL --------------------#
+
+function Show-VpnDefaultRouteAnalysis {
+
+    Write-Host ""
+    Write-Host "=== ANÁLISE DE ROTAS PADRÃO (VPN x LAN) ===" -ForegroundColor Cyan
+    Write-Host ""
+
+    $hasGetNetRoute = Get-Command Get-NetRoute -ErrorAction SilentlyContinue
+    if (-not $hasGetNetRoute) {
+        Write-Host "Get-NetRoute não está disponível neste sistema." -ForegroundColor Red
+        return
+    }
+
+    $defaultRoutes = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -AddressFamily IPv4 -ErrorAction SilentlyContinue
+    if (-not $defaultRoutes -or $defaultRoutes.Count -eq 0) {
+        Write-Host "Nenhuma rota padrão IPv4 (0.0.0.0/0) foi encontrada." -ForegroundColor Yellow
+        return
+    }
+
+    # Padrões comuns de adaptadores de VPN de terceiros
+    $vpnPattern = 'Fortinet|Forti|OpenVPN|TAP-Windows|TAP-WIN32|TAP-Windows Adapter|Cisco AnyConnect|AnyConnect|WireGuard|Checkpoint|Check Point|SonicWall|GlobalProtect|VPN'
+
+    $routeInfo = @()
+
+    foreach ($r in $defaultRoutes) {
+        $adapter = Get-NetAdapter -InterfaceIndex $r.InterfaceIndex -ErrorAction SilentlyContinue
+
+        $alias  = $null
+        $desc   = $null
+        $status = $null
+        $mac    = $null
+
+        if ($adapter) {
+            $alias  = $adapter.Name
+            $desc   = $adapter.InterfaceDescription
+            $status = $adapter.Status
+            $mac    = $adapter.MacAddress
+        }
+
+        $textoComparacao = ""
+        if ($alias) { $textoComparacao += $alias + " " }
+        if ($desc)  { $textoComparacao += $desc  + " " }
+
+        $tipoInterface = "Desconhecido"
+        $ehVpnTerceiro = $false
+
+        if ($textoComparacao -match $vpnPattern) {
+            $tipoInterface = "Provável VPN de terceiros (Fortinet/OpenVPN/AnyConnect/etc.)"
+            $ehVpnTerceiro = $true
+        }
+        elseif ($desc -and $desc -match "Wi-?Fi|Wireless|802\.11") {
+            $tipoInterface = "Adaptador Wi-Fi físico"
+        }
+        elseif ($desc -and $desc -match "Ethernet") {
+            $tipoInterface = "Adaptador Ethernet físico"
+        }
+        else {
+            $tipoInterface = "Interface de rede genérica (pode ser virtual ou física)"
+        }
+
+        $effectiveMetric = $r.RouteMetric + $r.InterfaceMetric
+
+        $routeInfo += [PSCustomObject]@{
+            DestinationPrefix = $r.DestinationPrefix
+            InterfaceIndex    = $r.InterfaceIndex
+            InterfaceAlias    = $alias
+            Description       = $desc
+            Status            = $status
+            MacAddress        = $mac
+            NextHop           = $r.NextHop
+            RouteMetric       = $r.RouteMetric
+            InterfaceMetric   = $r.InterfaceMetric
+            EffectiveMetric   = $effectiveMetric
+            TipoInterface     = $tipoInterface
+            EhVpnTerceiro     = $ehVpnTerceiro
+        }
+    }
+
+    # --- Mostrar todas as rotas padrão encontradas ---
+    Write-Host "Rotas padrão IPv4 encontradas:" -ForegroundColor Green
+    Write-Host ""
+
+    $routeInfo |
+        Sort-Object EffectiveMetric |
+        Format-Table DestinationPrefix,
+                     InterfaceIndex,
+                     InterfaceAlias,
+                     Status,
+                     NextHop,
+                     RouteMetric,
+                     InterfaceMetric,
+                     EffectiveMetric -AutoSize
+
+    Write-Host ""
+    Write-Host "Detalhes por interface:" -ForegroundColor Green
+    Write-Host ""
+
+    $idx = 1
+    foreach ($ri in $routeInfo | Sort-Object EffectiveMetric) {
+
+        $aliasText = if ([string]::IsNullOrWhiteSpace($ri.InterfaceAlias)) { "(sem alias)" } else { $ri.InterfaceAlias }
+        $descText  = if ([string]::IsNullOrWhiteSpace($ri.Description))    { "(sem descrição)" } else { $ri.Description }
+        $statusTxt = if ($ri.Status) { $ri.Status } else { "(desconhecido)" }
+        $gwText    = if ([string]::IsNullOrWhiteSpace($ri.NextHop))        { "(sem gateway)" } else { $ri.NextHop }
+        $vpnTxt    = if ($ri.EhVpnTerceiro) { "Sim" } else { "Não" }
+
+        Write-Host ("[{0}] InterfaceIndex..: {1}" -f $idx, $ri.InterfaceIndex) -ForegroundColor Cyan
+        Write-Host ("     Alias...........: {0}" -f $aliasText)
+        Write-Host ("     Descrição.......: {0}" -f $descText)
+        Write-Host ("     Status..........: {0}" -f $statusTxt)
+        if ($ri.MacAddress) {
+            Write-Host ("     MAC.............: {0}" -f $ri.MacAddress)
+        }
+        Write-Host ("     NextHop/Gateway.: {0}" -f $gwText)
+        Write-Host ("     Métrica rota....: {0}" -f $ri.RouteMetric)
+        Write-Host ("     Métrica iface...: {0}" -f $ri.InterfaceMetric)
+        Write-Host ("     Métrica efetiva.: {0}" -f $ri.EffectiveMetric)
+        Write-Host ("     Tipo detectado..: {0}" -f $ri.TipoInterface)
+        Write-Host ("     Heurística VPN?.: {0}" -f $vpnTxt)
+        Write-Host ""
+        $idx++
+    }
+
+    # --- Quem é a rota padrão principal (interface ATIVA com menor métrica)? ---
+    $ativo = $routeInfo |
+        Where-Object { $_.Status -eq "Up" } |
+        Sort-Object EffectiveMetric |
+        Select-Object -First 1
+
+    # --- Quais interfaces parecem VPN de terceiros e estão UP? ---
+    $vpnAdaptersUp = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+        $_.Status -eq "Up" -and
+        (($_.Name + " " + $_.InterfaceDescription) -match $vpnPattern)
+    }
+
+    Write-Host "=========================================" -ForegroundColor DarkGray
+    Write-Host "Resumo do cenário provável:" -ForegroundColor Cyan
+    Write-Host "=========================================" -ForegroundColor DarkGray
+    Write-Host ""
+
+    # Lista as VPN de terceiros detectadas (se houver)
+    if ($vpnAdaptersUp -and $vpnAdaptersUp.Count -gt 0) {
+        Write-Host "Interfaces que parecem VPN de terceiros e estão ATIVAS:" -ForegroundColor Green
+        foreach ($vpn in $vpnAdaptersUp) {
+            Write-Host ("  - IfIndex {0} | Nome: {1} | Desc: {2}" -f $vpn.ifIndex, $vpn.Name, $vpn.InterfaceDescription)
+        }
+        Write-Host ""
+    } else {
+        Write-Host "Nenhuma interface de VPN de terceiros 'Up' foi detectada (Fortinet/OpenVPN/AnyConnect/etc.)." -ForegroundColor Yellow
+        Write-Host ""
+    }
+
+    if ($ativo) {
+        $aliasPrincipal = if ([string]::IsNullOrWhiteSpace($ativo.InterfaceAlias)) { "(sem alias)" } else { $ativo.InterfaceAlias }
+        $descPrincipal  = if ([string]::IsNullOrWhiteSpace($ativo.Description))    { "(sem descrição)" } else { $ativo.Description }
+        $gwPrincipal    = if ([string]::IsNullOrWhiteSpace($ativo.NextHop))        { "(sem gateway)" } else { $ativo.NextHop }
+        $vpnPrincipal   = if ($ativo.EhVpnTerceiro) { "Sim" } else { "Não" }
+
+        Write-Host "Rota padrão principal (interface ATIVA com menor métrica):" -ForegroundColor Green
+        Write-Host ("  InterfaceIndex..: {0}" -f $ativo.InterfaceIndex)
+        Write-Host ("  Alias...........: {0}" -f $aliasPrincipal)
+        Write-Host ("  Descrição.......: {0}" -f $descPrincipal)
+        Write-Host ("  Status..........: {0}" -f $ativo.Status)
+        Write-Host ("  NextHop/Gateway.: {0}" -f $gwPrincipal)
+        Write-Host ("  Métrica efetiva.: {0}" -f $ativo.EffectiveMetric)
+        Write-Host ("  Tipo detectado..: {0}" -f $ativo.TipoInterface)
+        Write-Host ("  Heurística VPN?.: {0}" -f $vpnPrincipal)
+        Write-Host ""
+
+        $temVpnUp  = ($vpnAdaptersUp -and $vpnAdaptersUp.Count -gt 0)
+        $rotaEhVpn = $ativo.EhVpnTerceiro
+
+        if ($rotaEhVpn -and $temVpnUp -and ($vpnAdaptersUp.ifIndex -contains $ativo.InterfaceIndex)) {
+            Write-Host "→ CENÁRIO: VPN FULL TUNNEL" -ForegroundColor Green
+            Write-Host "  A rota padrão (0.0.0.0/0) passa por uma interface que parece ser VPN de terceiros." -ForegroundColor DarkGray
+        }
+        elseif ($temVpnUp -and -not $rotaEhVpn) {
+            Write-Host "→ CENÁRIO: VPN ATIVA EM SPLIT TUNNEL" -ForegroundColor Yellow
+            Write-Host "  Há interface(s) de VPN de terceiros 'Up', mas a rota padrão ainda sai por LAN/Wi-Fi." -ForegroundColor DarkGray
+            Write-Host "  Somente algumas redes (rotas específicas) devem estar passando pela VPN." -ForegroundColor DarkGray
+        }
+        elseif (-not $temVpnUp -and -not $rotaEhVpn) {
+            Write-Host "→ CENÁRIO: SEM VPN DE TERCEIROS ATIVA (rota padrão via LAN/Wi-Fi)." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "→ CENÁRIO: misto / não conclusivo. Veja a tabela de rotas para detalhes." -ForegroundColor Yellow
+        }
+
+    } else {
+        Write-Host "Nenhuma interface com rota padrão está com status 'Up'." -ForegroundColor Yellow
+        Write-Host "Verifique a tabela acima; pode haver rotas órfãs." -ForegroundColor DarkGray
+    }
+
+    Write-Host ""
+    Write-Host "Dicas:" -ForegroundColor DarkGray
+    Write-Host " - Se o OpenVPN estiver conectado, ele deve aparecer na lista de 'VPN de terceiros ATIVAS'." -ForegroundColor DarkGray
+    Write-Host " - Se ele aparecer ali mas a rota padrão for Wi-Fi/Ethernet, é típico SPLIT TUNNEL." -ForegroundColor DarkGray
+    Write-Host " - Veja 'route print' para saber quais redes específicas passam pela VPN." -ForegroundColor DarkGray
+}
+
 #-------------------- MENU PRINCIPAL --------------------#
 
 $sair = $false
@@ -1236,6 +1438,7 @@ do {
     Write-Host "[10] Criar novo perfil Wi-Fi (XML + netsh)"
     Write-Host "[11] Ver perfis WPA-Enterprise + certificados de cliente (detalhado)"
     Write-Host "[12] Ver status de conexões VPN"
+    Write-Host "[13] Análise de rotas padrão e túnel (Full/Split VPN)"
     Write-Host "[0]  Sair"
     Write-Host "========================================="
 
@@ -1254,6 +1457,7 @@ do {
         "10" { New-WifiProfile          ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
         "11" { Show-WifiEnterpriseInfo  ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
         "12" { Show-VpnStatus           ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
+        "13" { Show-VpnDefaultRouteAnalysis ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
         "0"  { $sair = $true }
         default {
             Write-Host "Opção inválida. Tente novamente." -ForegroundColor Red
