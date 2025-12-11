@@ -24,28 +24,16 @@ Este script oferece um **menu interativo em PowerShell** que centraliza essas in
 
 O aplicativo oferece, por meio de um menu simples, opções como:
 
-1. **Listar redes Wi-Fi configuradas no equipamento**
-   - Exibe todos os perfis de Wi-Fi conhecidos pelo Windows.
-
-2. **Exibir senha de uma rede Wi-Fi salva**
-   - Abre um submenu com a lista de redes.
-   - Ao selecionar uma rede, o script mostra a **senha (key)** configurada para aquele SSID.
-
-3. **Características das interfaces Wi-Fi**
-   - Lista as placas de rede Wi-Fi (hardware) disponíveis:
-     - Nome/modelo da placa
-     - Endereço MAC
-     - ID de hardware e outras características relevantes
-   - Informa **qual SSID** cada placa está utilizando (se estiver conectada).
-   - Mostra também a **força do sinal** da conexão.
-
-4. **Detalhes da conexão de rede**
-   - Exibe:
-     - Endereço IP da interface conectada
-     - Gateway padrão
-     - Servidores DNS
-     - Máscara de sub-rede
-     - Representação **CIDR** da rede
+  Utilitário para:
+  - Listar redes Wi-Fi
+  - Mostrar senhas
+  - Mostrar características (WPA/AES etc.)
+  - Listar adaptadores Wi-Fi (hardware + rede + IP + banda + driver)
+  - Backup/restauração de perfis Wi-Fi (XML)
+  - Excluir perfil Wi-Fi específico
+  - Diagnóstico de rede (ping / tracert / arp)
+  - Scanner de redes Wi-Fi (site survey básico)
+  - Criar novo perfil Wi-Fi (XML + netsh)
 
 ---
 
