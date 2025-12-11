@@ -4,13 +4,14 @@
   - Listar redes Wi-Fi
   - Mostrar senhas
   - Mostrar características (WPA/AES etc.)
-  - Listar adaptadores Wi-Fi (hardware + rede + IP)
+  - Listar adaptadores Wi-Fi (hardware + rede + IP + banda + driver)
   - Backup/restauração de perfis Wi-Fi (XML)
   - Excluir perfil Wi-Fi específico
 
 .OBS
   - Recomenda-se executar o PowerShell como Administrador.
-  - Usa "netsh wlan", Win32_NetworkAdapter, Win32_NetworkAdapterConfiguration e Win32_PnPEntity.
+  - Usa "netsh wlan", Win32_NetworkAdapter, Win32_NetworkAdapterConfiguration,
+    Win32_PnPEntity e Win32_PnPSignedDriver.
 #>
 
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}
@@ -204,7 +205,7 @@ function Show-WifiList {
 #-------------------- Interfaces / adaptadores --------------------#
 
 function Get-WifiInterfaces {
-    # Lê "netsh wlan show interfaces" e retorna Nome + SSID + BSSID + Signal
+    # Lê "netsh wlan show interfaces" e retorna Nome + SSID + BSSID + Signal + Channel + RadioType
     $output = netsh wlan show interfaces 2>$null
     if (-not $output) { return @() }
 
@@ -236,6 +237,16 @@ function Get-WifiInterfaces {
             $current.SignalPercent = [int]$Matches[2]
             continue
         }
+
+        if ($line -match "^\s*(Channel|Canal)\s*:\s*(\d+)") {
+            $current.Channel = [int]$Matches[2]
+            continue
+        }
+
+        if ($line -match "^\s*(Radio type|Tipo de rádio)\s*:\s*(.+)$") {
+            $current.RadioType = $Matches[2].Trim()
+            continue
+        }
     }
 
     if ($current.Contains("Name")) {
@@ -247,7 +258,7 @@ function Get-WifiInterfaces {
 
 function Show-WifiAdapters {
     Write-Host ""
-    Write-Host "Obtendo adaptadores Wi-Fi (hardware + rede + IP)..." -ForegroundColor Cyan
+    Write-Host "Obtendo adaptadores Wi-Fi (hardware + rede + IP + banda + driver)..." -ForegroundColor Cyan
 
     $adapters = Get-CimInstance Win32_NetworkAdapter -ErrorAction SilentlyContinue |
         Where-Object {
@@ -264,7 +275,8 @@ function Show-WifiAdapters {
     }
 
     $wifiIfaces = Get-WifiInterfaces
-    $ipConfigs = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled = TRUE" -ErrorAction SilentlyContinue
+    $ipConfigs  = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled = TRUE" -ErrorAction SilentlyContinue
+    $drvInfo    = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue
 
     $result = @()
 
@@ -282,14 +294,29 @@ function Show-WifiAdapters {
             $iface = $wifiIfaces | Where-Object { $_.Name -eq $ad.NetConnectionID } | Select-Object -First 1
         }
 
-        $ssid   = $null
-        $bssid  = $null
-        $signal = $null
+        $ssid      = $null
+        $bssid     = $null
+        $signal    = $null
+        $channel   = $null
+        $radioType = $null
+        $band      = $null
 
         if ($iface) {
-            $ssid   = $iface.SSID
-            $bssid  = $iface.BSSID
-            $signal = $iface.SignalPercent
+            $ssid      = $iface.SSID
+            $bssid     = $iface.BSSID
+            $signal    = $iface.SignalPercent
+            $channel   = $iface.Channel
+            $radioType = $iface.RadioType
+
+            if ($channel) {
+                if ($channel -ge 1 -and $channel -le 14) {
+                    $band = "2.4 GHz"
+                } elseif ($channel -ge 32 -and $channel -le 196) {
+                    $band = "5 GHz"
+                } else {
+                    $band = "Desconhecida"
+                }
+            }
         }
 
         if (-not $ssid)   { $ssid   = "(não conectado)" }
@@ -333,21 +360,37 @@ function Show-WifiAdapters {
             $hwId = ($pnp.HardwareID | Select-Object -First 2) -join " | "
         }
 
+        $driver      = $null
+        $driverName  = $null
+        $driverVer   = $null
+        if ($drvInfo) {
+            $driver = $drvInfo | Where-Object { $_.DeviceID -eq $ad.PNPDeviceID } | Select-Object -First 1
+            if ($driver) {
+                $driverName = $driver.DriverName
+                $driverVer  = $driver.DriverVersion
+            }
+        }
+
         $result += [PSCustomObject]@{
-            Nome        = $ad.Name
-            Conexao     = $ad.NetConnectionID
-            MAC         = $mac
-            SSID        = $ssid
-            BSSID       = $bssid
-            Signal      = $signal
-            Status      = $status
-            IPv4        = $ipv4
-            Subnet      = $subnet
-            CIDR        = $cidr
-            Gateway     = $gateway
-            DNS         = $dnsList
-            PNPDeviceID = $ad.PNPDeviceID
-            HardwareID  = $hwId
+            Nome         = $ad.Name
+            Conexao      = $ad.NetConnectionID
+            MAC          = $mac
+            SSID         = $ssid
+            BSSID        = $bssid
+            Signal       = $signal
+            Status       = $status
+            Banda        = $band
+            Canal        = $channel
+            RadioType    = $radioType
+            IPv4         = $ipv4
+            Subnet       = $subnet
+            CIDR         = $cidr
+            Gateway      = $gateway
+            DNS          = $dnsList
+            PNPDeviceID  = $ad.PNPDeviceID
+            HardwareID   = $hwId
+            DriverName   = $driverName
+            DriverVersion= $driverVer
         }
     }
 
@@ -366,6 +409,16 @@ function Show-WifiAdapters {
         Write-Host ("    Força sinal..: {0} %" -f $item.Signal)
         Write-Host ("    Status.......: {0}" -f $item.Status)
 
+        if ($item.Banda) {
+            Write-Host ("    Banda........: {0}" -f $item.Banda)
+        }
+        if ($item.Canal) {
+            Write-Host ("    Canal........: {0}" -f $item.Canal)
+        }
+        if ($item.RadioType) {
+            Write-Host ("    Tipo rádio...: {0}" -f $item.RadioType)
+        }
+
         if ($item.IPv4) {
             $cidrStr = if ($item.CIDR) { " /$($item.CIDR)" } else { "" }
             Write-Host ("    IPv4.........: {0}" -f $item.IPv4)
@@ -382,6 +435,10 @@ function Show-WifiAdapters {
             Write-Host ("    IPv4.........: (sem IP configurado)") -ForegroundColor DarkYellow
         }
 
+        if ($item.DriverName -or $item.DriverVersion) {
+            Write-Host ("    Driver.......: {0} {1}" -f $item.DriverName, $item.DriverVersion)
+        }
+
         if ($item.HardwareID) {
             Write-Host ("    HardwareID...: {0}" -f $item.HardwareID)
         }
@@ -390,7 +447,7 @@ function Show-WifiAdapters {
         $index++
     }
 
-    Write-Host "SSID = rede associada ao adaptador (quando conectado)." -ForegroundColor DarkGray
+    Write-Host "Banda estimada a partir do canal: 1-14 → 2.4 GHz; 32+ → 5 GHz (simplificado)." -ForegroundColor DarkGray
     Write-Host "CIDR calculado a partir da máscara de sub-rede IPv4." -ForegroundColor DarkGray
 }
 
@@ -479,11 +536,9 @@ function Remove-WifiProfile {
     Write-Host ""
     Write-Host "Excluindo perfil '$profile'..." -ForegroundColor Cyan
 
-    # Comando válido em PT-BR: delete profile name="<perfil>"
     $out = netsh wlan delete profile name="$profile" 2>&1
     $out | ForEach-Object { Write-Host "   $($_)" }
 
-    # Verifica se sumiu da lista
     $after = Get-WifiProfiles
 
     if ($after -contains $profile) {
@@ -511,7 +566,7 @@ do {
     Write-Host "[1] Listar redes Wi-Fi neste equipamento"
     Write-Host "[2] Mostrar a senha das redes Wi-Fi"
     Write-Host "[3] Características das redes Wi-Fi"
-    Write-Host "[4] Listar adaptadores Wi-Fi (hardware + rede + IP)"
+    Write-Host "[4] Listar adaptadores Wi-Fi (hardware + rede + IP + banda + driver)"
     Write-Host "[5] Backup de perfis Wi-Fi (exportar XML)"
     Write-Host "[6] Restaurar perfis Wi-Fi de backup (importar XML)"
     Write-Host "[7] Excluir um perfil Wi-Fi existente"
