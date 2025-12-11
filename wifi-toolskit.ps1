@@ -10,11 +10,12 @@
   - Diagnóstico de rede (ping / tracert / arp)
   - Scanner de redes Wi-Fi (site survey básico)
   - Criar novo perfil Wi-Fi (XML + netsh)
+  - Listar perfis WPA-Enterprise + certificados de cliente (Client Auth)
 
 .OBS
   - Recomenda-se executar o PowerShell como Administrador.
   - Usa "netsh wlan", Win32_NetworkAdapter, Win32_NetworkAdapterConfiguration,
-    Win32_PnPEntity e Win32_PnPSignedDriver.
+    Win32_PnPEntity, Win32_PnPSignedDriver e Cert:\.
 #>
 
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}
@@ -603,6 +604,7 @@ function New-WifiProfile {
     $auth = $null
     $encryption = $null
     $password = $null
+    $plainPwd = $null
 
     switch ($secOpt) {
         "1" {
@@ -622,7 +624,7 @@ function New-WifiProfile {
             $plainPwd = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
             [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
 
-            $pwdConfirm = Read-Host "Confirme a senha (digite novamente)" 
+            $pwdConfirm = Read-Host "Confirme a senha (digite novamente)"
             if ($plainPwd -ne $pwdConfirm) {
                 Write-Host "As senhas não conferem. Operação cancelada." -ForegroundColor Red
                 return
@@ -697,7 +699,10 @@ function New-WifiProfile {
 "@
     }
 
-    $tempPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ("WiFiProfile_{0}.xml" -f ([Guid]::NewGuid().ToString("N"))))
+    $tempPath = [System.IO.Path]::Combine(
+        [System.IO.Path]::GetTempPath(),
+        ("WiFiProfile_{0}.xml" -f ([Guid]::NewGuid().ToString("N")))
+    )
     $profileXml | Out-File -FilePath $tempPath -Encoding UTF8 -Force
 
     Write-Host ""
@@ -922,6 +927,159 @@ function Scan-WifiNetworks {
     Write-Host "Dica: use esta saída como um mini site survey (interferência, sobreposição de canais, banda, etc.)." -ForegroundColor DarkGray
 }
 
+#-------------------- PERFIS WPA-ENTERPRISE + CERTIFICADOS DE CLIENTE --------------------#
+
+function Show-WifiEnterpriseInfo {
+    Write-Host ""
+    Write-Host "=== Perfis Wi-Fi WPA/WPA2/WPA3 Enterprise + Certificados de Cliente ===" -ForegroundColor Cyan
+    Write-Host ""
+
+    # --- Parte 1: Perfis Wi-Fi Enterprise / 802.1X ---
+    $profiles = Get-WifiProfiles
+    $enterpriseProfiles = @()
+
+    foreach ($p in $profiles) {
+        $details = netsh wlan show profile name="$p" 2>$null
+        if (-not $details) { continue }
+
+        $authLines  = $details | Select-String "Authentication|Autenticação"
+        $encLines   = $details | Select-String "Cipher|Cifra"
+        $eapLines   = $details | Select-String "EAP type|Tipo de EAP|Tipo EAP"
+
+        $auth = $null
+        if ($authLines) {
+            $line  = $authLines[0].ToString()
+            $parts = $line.Split(":",2)
+            if ($parts.Count -eq 2) { $auth = $parts[1].Trim() }
+        }
+
+        $enc = $null
+        if ($encLines) {
+            $line  = $encLines[0].ToString()
+            $parts = $line.Split(":",2)
+            if ($parts.Count -eq 2) { $enc = $parts[1].Trim() }
+        }
+
+        $eap = $null
+        if ($eapLines) {
+            $line  = $eapLines[0].ToString()
+            $parts = $line.Split(":",2)
+            if ($parts.Count -eq 2) { $eap = $parts[1].Trim() }
+        }
+
+        $isEnterprise = $false
+        if ($auth -match "Enterprise" -or $auth -match "802\.1X" -or $eap) {
+            $isEnterprise = $true
+        }
+
+        if ($isEnterprise) {
+            $enterpriseProfiles += [PSCustomObject]@{
+                Perfil        = $p
+                Autenticacao  = $auth
+                Criptografia  = $enc
+                EAP           = $eap
+            }
+        }
+    }
+
+    if ($enterpriseProfiles.Count -gt 0) {
+        Write-Host "Perfis Wi-Fi com autenticação Enterprise / 802.1X encontrados:" -ForegroundColor Green
+        $i = 1
+        foreach ($ep in $enterpriseProfiles) {
+            Write-Host ""
+            Write-Host ("[{0}] Perfil......: {1}" -f $i, $ep.Perfil) -ForegroundColor Cyan
+            Write-Host ("     Autenticação: {0}" -f $ep.Autenticacao)
+            if ($ep.Criptografia) {
+                Write-Host ("     Criptografia: {0}" -f $ep.Criptografia)
+            }
+            if ($ep.EAP) {
+                Write-Host ("     Tipo EAP....: {0}" -f $ep.EAP)
+            } else {
+                Write-Host ("     Tipo EAP....: (não informado no perfil)") -ForegroundColor DarkYellow
+            }
+            $i++
+        }
+    } else {
+        Write-Host "Nenhum perfil Wi-Fi do tipo Enterprise / 802.1X foi encontrado." -ForegroundColor Yellow
+    }
+
+    Write-Host ""
+    Write-Host "-----------------------------------------------------------------" -ForegroundColor DarkGray
+    Write-Host "Agora procurando certificados de cliente (Client Authentication)" -ForegroundColor Cyan
+    Write-Host "nas lojas: Cert:\CurrentUser\My e Cert:\LocalMachine\My..." -ForegroundColor DarkGray
+    Write-Host "-----------------------------------------------------------------" -ForegroundColor DarkGray
+    Write-Host ""
+
+    # --- Parte 2: Certificados de cliente (Client Authentication) ---
+    $stores = @("Cert:\CurrentUser\My", "Cert:\LocalMachine\My")
+    $certResults = @()
+
+    foreach ($store in $stores) {
+        try {
+            $certs = Get-ChildItem -Path $store -ErrorAction Stop
+        } catch {
+            continue
+        }
+
+        foreach ($c in $certs) {
+            $isClientAuth = $false
+            $ekuFriendly  = @()
+            $ekuOid       = @()
+
+            if ($c.EnhancedKeyUsageList) {
+                foreach ($eku in $c.EnhancedKeyUsageList) {
+                    if ($eku.FriendlyName) { $ekuFriendly += $eku.FriendlyName }
+                    if ($eku.ObjectId)     { $ekuOid      += $eku.ObjectId.Value }
+                }
+            }
+
+            if ($ekuFriendly -contains "Client Authentication" -or
+                $ekuFriendly -contains "Autenticação de Cliente") {
+                $isClientAuth = $true
+            }
+
+            if (-not $isClientAuth -and $ekuOid) {
+                if ($ekuOid -contains "1.3.6.1.5.5.7.3.2") {   # OID Client Authentication
+                    $isClientAuth = $true
+                }
+            }
+
+            if ($isClientAuth) {
+                $certResults += [PSCustomObject]@{
+                    Store      = $store
+                    Subject    = $c.Subject
+                    Thumbprint = $c.Thumbprint
+                    NotAfter   = $c.NotAfter
+                    Issuer     = $c.Issuer
+                }
+            }
+        }
+    }
+
+    if ($certResults.Count -gt 0) {
+        Write-Host "Certificados de cliente encontrados (potencialmente usados em EAP-TLS/802.1X):" -ForegroundColor Green
+        $j = 1
+        foreach ($cert in $certResults | Sort-Object Store, Subject) {
+            Write-Host ""
+            Write-Host ("[{0}] Store.....: {1}" -f $j, $cert.Store) -ForegroundColor Cyan
+            Write-Host ("     Subject...: {0}" -f $cert.Subject)
+            Write-Host ("     Issuer....: {0}" -f $cert.Issuer)
+            Write-Host ("     Thumbprint: {0}" -f $cert.Thumbprint)
+            Write-Host ("     Válido até: {0}" -f $cert.NotAfter)
+            $j++
+        }
+    } else {
+        Write-Host "Nenhum certificado de cliente (Client Authentication) foi encontrado" -ForegroundColor Yellow
+        Write-Host "nas lojas CurrentUser\My e LocalMachine\My." -ForegroundColor Yellow
+    }
+
+    Write-Host ""
+    Write-Host "Observação: o Windows não expõe de forma simples qual certificado está" -ForegroundColor DarkGray
+    Write-Host "exatamente vinculado a cada perfil Wi-Fi Enterprise. Aqui mostramos:" -ForegroundColor DarkGray
+    Write-Host " - Quais perfis são Enterprise / 802.1X" -ForegroundColor DarkGray
+    Write-Host " - Quais certificados de cliente existem para autenticação EAP-TLS." -ForegroundColor DarkGray
+}
+
 #-------------------- MENU PRINCIPAL --------------------#
 
 $sair = $false
@@ -941,6 +1099,7 @@ do {
     Write-Host "[8]  Diagnóstico de rede (ping / tracert / arp)"
     Write-Host "[9]  Scanner de redes Wi-Fi (site survey básico)"
     Write-Host "[10] Criar novo perfil Wi-Fi (XML + netsh)"
+    Write-Host "[11] Ver perfis WPA-Enterprise + certificados de cliente"
     Write-Host "[0]  Sair"
     Write-Host "========================================="
     $opt = Read-Host "Escolha uma opção"
@@ -956,6 +1115,7 @@ do {
         "8"  { Show-NetworkDiagnosticsMenu }
         "9"  { Scan-WifiNetworks       ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
         "10" { New-WifiProfile         ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
+        "11" { Show-WifiEnterpriseInfo ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
         "0"  { $sair = $true }
         default {
             Write-Host "Opção inválida. Tente novamente." -ForegroundColor Red
