@@ -9,6 +9,7 @@
   - Excluir perfil Wi-Fi específico
   - Diagnóstico de rede (ping / tracert / arp)
   - Scanner de redes Wi-Fi (site survey básico)
+  - Criar novo perfil Wi-Fi (XML + netsh)
 
 .OBS
   - Recomenda-se executar o PowerShell como Administrador.
@@ -55,6 +56,20 @@ function Get-WifiBandFromChannel {
     } else {
         return "Desconhecida"
     }
+}
+
+function Escape-Xml {
+    param(
+        [string] $Text
+    )
+    if ($null -eq $Text) { return "" }
+    $t = $Text
+    $t = $t -replace '&','&amp;'
+    $t = $t -replace '<','&lt;'
+    $t = $t -replace '>','&gt;'
+    $t = $t -replace '"','&quot;'
+    $t = $t -replace "'","&apos;"
+    return $t
 }
 
 function Get-WifiProfiles {
@@ -445,7 +460,7 @@ function Show-WifiAdapters {
         $index++
     }
 
-    Write-Host "Banda estimada a partir do canal: 1-14 → 2.4 GHz; 32+ → 5 GHz; >196 → 6 GHz/Outra." -ForegroundColor DarkGray
+    Write-Host "Banda estimada a partir do canal: 1-14 → 2.4 GHz; 32-196 → 5 GHz; >196 → 6 GHz/Outra." -ForegroundColor DarkGray
     Write-Host "CIDR calculado a partir da máscara de sub-rede IPv4." -ForegroundColor DarkGray
 }
 
@@ -553,6 +568,149 @@ function Remove-WifiProfile {
     Show-WifiList
 }
 
+#-------------------- CRIAÇÃO DE NOVO PERFIL WI-FI (XML + NETSH) --------------------#
+
+function New-WifiProfile {
+    Write-Host ""
+    Write-Host "=== Criação de novo perfil Wi-Fi ===" -ForegroundColor Cyan
+
+    $ssid = Read-Host "Informe o SSID da rede (nome exato do Wi-Fi)"
+    if ([string]::IsNullOrWhiteSpace($ssid)) {
+        Write-Host "SSID inválido." -ForegroundColor Red
+        return
+    }
+
+    $existing = Get-WifiProfiles | Where-Object { $_ -eq $ssid }
+    if ($existing) {
+        Write-Host ""
+        Write-Host "⚠ Já existe um perfil com SSID '$ssid' neste equipamento." -ForegroundColor Yellow
+        $cont = Read-Host "Deseja continuar e criar/duplicar mesmo assim? (S/N)"
+        if ($cont -notmatch '^[sSyY]') {
+            Write-Host "Operação cancelada." -ForegroundColor Cyan
+            return
+        }
+    }
+
+    $hiddenAns = Read-Host "A rede é OCULTA (hidden)? (S/N)"
+    $nonBroadcast = if ($hiddenAns -match '^[sSyY]') { "true" } else { "false" }
+
+    Write-Host ""
+    Write-Host "Tipo de segurança:" -ForegroundColor Cyan
+    Write-Host "[1] Aberta (sem autenticação / sem senha)"
+    Write-Host "[2] WPA2-Personal (AES, senha pré-compartilhada)"
+    $secOpt = Read-Host "Escolha uma opção (1 ou 2)"
+
+    $auth = $null
+    $encryption = $null
+    $password = $null
+
+    switch ($secOpt) {
+        "1" {
+            $auth = "open"
+            $encryption = "none"
+        }
+        "2" {
+            $auth = "WPA2PSK"
+            $encryption = "AES"
+            $password = Read-Host "Informe a senha (passphrase)" -AsSecureString
+            if (-not $password) {
+                Write-Host "Senha inválida." -ForegroundColor Red
+                return
+            }
+
+            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($password)
+            $plainPwd = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+
+            $pwdConfirm = Read-Host "Confirme a senha (digite novamente)" 
+            if ($plainPwd -ne $pwdConfirm) {
+                Write-Host "As senhas não conferem. Operação cancelada." -ForegroundColor Red
+                return
+            }
+        }
+        default {
+            Write-Host "Opção de segurança inválida." -ForegroundColor Red
+            return
+        }
+    }
+
+    $ssidXml = Escape-Xml -Text $ssid
+    $nonBroadcastXml = $nonBroadcast
+    $authXml = Escape-Xml -Text $auth
+    $encXml  = Escape-Xml -Text $encryption
+
+    $profileXml = $null
+
+    if ($auth -eq "open" -and $encryption -eq "none") {
+        $profileXml = @"
+<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+    <name>$ssidXml</name>
+    <SSIDConfig>
+        <SSID>
+            <name>$ssidXml</name>
+        </SSID>
+        <nonBroadcast>$nonBroadcastXml</nonBroadcast>
+    </SSIDConfig>
+    <connectionType>ESS</connectionType>
+    <connectionMode>auto</connectionMode>
+    <MSM>
+        <security>
+            <authEncryption>
+                <authentication>$authXml</authentication>
+                <encryption>$encXml</encryption>
+                <useOneX>false</useOneX>
+            </authEncryption>
+        </security>
+    </MSM>
+</WLANProfile>
+"@
+    } else {
+        $pwdXml = Escape-Xml -Text $plainPwd
+        $profileXml = @"
+<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+    <name>$ssidXml</name>
+    <SSIDConfig>
+        <SSID>
+            <name>$ssidXml</name>
+        </SSID>
+        <nonBroadcast>$nonBroadcastXml</nonBroadcast>
+    </SSIDConfig>
+    <connectionType>ESS</connectionType>
+    <connectionMode>auto</connectionMode>
+    <MSM>
+        <security>
+            <authEncryption>
+                <authentication>$authXml</authentication>
+                <encryption>$encXml</encryption>
+                <useOneX>false</useOneX>
+            </authEncryption>
+            <sharedKey>
+                <keyType>passPhrase</keyType>
+                <protected>false</protected>
+                <keyMaterial>$pwdXml</keyMaterial>
+            </sharedKey>
+        </security>
+    </MSM>
+</WLANProfile>
+"@
+    }
+
+    $tempPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ("WiFiProfile_{0}.xml" -f ([Guid]::NewGuid().ToString("N"))))
+    $profileXml | Out-File -FilePath $tempPath -Encoding UTF8 -Force
+
+    Write-Host ""
+    Write-Host "Arquivo de perfil gerado: $tempPath" -ForegroundColor DarkGray
+    Write-Host "Importando perfil com netsh..." -ForegroundColor Cyan
+
+    & netsh wlan add profile filename="$tempPath" user=all
+
+    Write-Host ""
+    Write-Host "Perfil para SSID '$ssid' criado (ou atualizado) com sucesso, se não houver erros acima." -ForegroundColor Green
+    Write-Host "Verifique com: netsh wlan show profiles" -ForegroundColor DarkGray
+}
+
 #-------------------- DIAGNÓSTICO DE REDE (PING / TRACERT / ARP) --------------------#
 
 function Run-PingTool {
@@ -654,9 +812,7 @@ function Scan-WifiNetworks {
 
     foreach ($line in $output) {
 
-        # SSID X : Nome
         if ($line -match "^\s*SSID\s+\d+\s*:\s*(.+)$") {
-            # Fecha entrada anterior de BSSID, se existir
             if ($currentEntry) {
                 $results += [PSCustomObject]$currentEntry
                 $currentEntry = $null
@@ -667,21 +823,17 @@ function Scan-WifiNetworks {
             continue
         }
 
-        # Autenticação / Authentication
         if ($line -match "^\s*(Authentication|Autenticação)\s*:\s*(.+)$") {
             $currentAuth = $Matches[2].Trim()
             continue
         }
 
-        # Criptografia / Encryption
         if ($line -match "^\s*(Encryption|Criptografia)\s*:\s*(.+)$") {
             $currentEncryption = $Matches[2].Trim()
             continue
         }
 
-        # BSSID X : xx:xx:xx:xx:xx:xx
         if ($line -match "^\s*BSSID\s+\d+\s*:\s*(.+)$") {
-            # Salva entrada anterior, se houver
             if ($currentEntry) {
                 $results += [PSCustomObject]$currentEntry
             }
@@ -699,7 +851,6 @@ function Scan-WifiNetworks {
             continue
         }
 
-        # Sinal / Signal
         if ($line -match "^\s*(Signal|Sinal)\s*:\s*(\d+)%") {
             if ($currentEntry) {
                 $currentEntry.Signal = [int]$Matches[2]
@@ -707,7 +858,6 @@ function Scan-WifiNetworks {
             continue
         }
 
-        # Canal / Channel
         if ($line -match "^\s*(Channel|Canal)\s*:\s*(\d+)") {
             if ($currentEntry) {
                 $ch = [int]$Matches[2]
@@ -717,7 +867,6 @@ function Scan-WifiNetworks {
             continue
         }
 
-        # Tipo de rádio / Radio type
         if ($line -match "^\s*(Radio type|Tipo de rádio)\s*:\s*(.+)$") {
             if ($currentEntry) {
                 $currentEntry.RadioType = $Matches[2].Trim()
@@ -726,7 +875,6 @@ function Scan-WifiNetworks {
         }
     }
 
-    # Adiciona última entrada, se existir
     if ($currentEntry) {
         $results += [PSCustomObject]$currentEntry
     }
@@ -783,30 +931,32 @@ do {
     Write-Host "========================================="
     Write-Host "         MENU WI-FI (NETSH)              "
     Write-Host "========================================="
-    Write-Host "[1] Listar redes Wi-Fi neste equipamento"
-    Write-Host "[2] Mostrar a senha das redes Wi-Fi"
-    Write-Host "[3] Características das redes Wi-Fi"
-    Write-Host "[4] Listar adaptadores Wi-Fi (hardware + rede + IP + banda + driver)"
-    Write-Host "[5] Backup de perfis Wi-Fi (exportar XML)"
-    Write-Host "[6] Restaurar perfis Wi-Fi de backup (importar XML)"
-    Write-Host "[7] Excluir um perfil Wi-Fi existente"
-    Write-Host "[8] Diagnóstico de rede (ping / tracert / arp)"
-    Write-Host "[9] Scanner de redes Wi-Fi (site survey básico)"
-    Write-Host "[0] Sair"
+    Write-Host "[1]  Listar redes Wi-Fi neste equipamento"
+    Write-Host "[2]  Mostrar a senha das redes Wi-Fi"
+    Write-Host "[3]  Características das redes Wi-Fi"
+    Write-Host "[4]  Listar adaptadores Wi-Fi (hardware + rede + IP + banda + driver)"
+    Write-Host "[5]  Backup de perfis Wi-Fi (exportar XML)"
+    Write-Host "[6]  Restaurar perfis Wi-Fi de backup (importar XML)"
+    Write-Host "[7]  Excluir um perfil Wi-Fi existente"
+    Write-Host "[8]  Diagnóstico de rede (ping / tracert / arp)"
+    Write-Host "[9]  Scanner de redes Wi-Fi (site survey básico)"
+    Write-Host "[10] Criar novo perfil Wi-Fi (XML + netsh)"
+    Write-Host "[0]  Sair"
     Write-Host "========================================="
     $opt = Read-Host "Escolha uma opção"
 
     switch ($opt) {
-        "1" { Show-WifiList           ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
-        "2" { Show-WifiPassword       ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
-        "3" { Show-WifiCharacteristics; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
-        "4" { Show-WifiAdapters       ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
-        "5" { Backup-WifiProfiles     ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
-        "6" { Restore-WifiProfiles    ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
-        "7" { Remove-WifiProfile      ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
-        "8" { Show-NetworkDiagnosticsMenu }
-        "9" { Scan-WifiNetworks       ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
-        "0" { $sair = $true }
+        "1"  { Show-WifiList           ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
+        "2"  { Show-WifiPassword       ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
+        "3"  { Show-WifiCharacteristics; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
+        "4"  { Show-WifiAdapters       ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
+        "5"  { Backup-WifiProfiles     ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
+        "6"  { Restore-WifiProfiles    ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
+        "7"  { Remove-WifiProfile      ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
+        "8"  { Show-NetworkDiagnosticsMenu }
+        "9"  { Scan-WifiNetworks       ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
+        "10" { New-WifiProfile         ; Read-Host "`nPressione ENTER para voltar ao menu..." | Out-Null }
+        "0"  { $sair = $true }
         default {
             Write-Host "Opção inválida. Tente novamente." -ForegroundColor Red
             Start-Sleep -Seconds 1.5
