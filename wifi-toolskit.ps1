@@ -479,27 +479,17 @@ function Remove-WifiProfile {
     Write-Host ""
     Write-Host "Excluindo perfil '$profile'..." -ForegroundColor Cyan
 
-    # Guarda lista antes (apenas para referência, se quiser usar)
-    $before = Get-WifiProfiles
+    # Comando válido em PT-BR: delete profile name="<perfil>"
+    $out = netsh wlan delete profile name="$profile" 2>&1
+    $out | ForEach-Object { Write-Host "   $($_)" }
 
-    # Remove do usuário atual
-    Write-Host " - Removendo do usuário atual (user=current)..." -ForegroundColor DarkCyan
-    $outCurrent = netsh wlan delete profile name="$profile" user=current 2>&1
-    $outCurrent | ForEach-Object { Write-Host "   $($_)" }
-
-    # Remove de todos os usuários
-    Write-Host " - Removendo de todos os usuários (user=all)..." -ForegroundColor DarkCyan
-    $outAll = netsh wlan delete profile name="$profile" user=all 2>&1
-    $outAll | ForEach-Object { Write-Host "   $($_)" }
-
-    # Verifica depois
+    # Verifica se sumiu da lista
     $after = Get-WifiProfiles
 
     if ($after -contains $profile) {
         Write-Host ""
         Write-Host "⚠ O perfil '$profile' ainda aparece na lista após a tentativa de exclusão." -ForegroundColor Yellow
-        Write-Host "   - Pode ser um perfil especial ou associado a outro usuário." -ForegroundColor DarkYellow
-        Write-Host "   - Verifique manualmente com: netsh wlan show profiles" -ForegroundColor DarkYellow
+        Write-Host "   Verifique manualmente com: netsh wlan show profiles" -ForegroundColor DarkYellow
     } else {
         Write-Host ""
         Write-Host "✅ Perfil '$profile' excluído da configuração de Wi-Fi (onde existia)." -ForegroundColor Green
